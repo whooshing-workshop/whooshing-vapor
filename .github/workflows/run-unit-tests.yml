@@ -12,11 +12,6 @@ on:
         required: false
         default: ''
         description: "Apply a --filter to the tests that will be run."
-      with_testing:
-        type: boolean
-        required: false
-        default: true
-        description: "Set to 'true' to enable compilation for testing and @testable imports. Defaults to 'true'."
       with_release_mode_testing:
         type: boolean
         required: false
@@ -57,6 +52,11 @@ on:
         required: false
         default: false
         description: "Set to 'true' to build with the Static Linux SDK to test MUSL compatibility. Defaults to 'false'."
+      with_wasm:
+        type: boolean
+        required: false
+        default: false
+        description: "Set to 'true' to build with the SwiftWasm SDK to test WASM compatibility. Defaults to 'false'."
       with_android:
         type: boolean
         required: false
@@ -87,13 +87,21 @@ on:
         required: false
         default: 'test'
         description: "Action to pass to xcodebuild when running iOS tests. Defaults to 'test'. Set to '' to just compile and not run tests."
+      enable_all_traits:
+        type: boolean
+        required: false
+        default: false
+        description: "Set to 'false' to enable only default traits when running tests. Defaults to 'false'. Doesn't have any effect on the disabled-traits-unit job."
     secrets:
       CODECOV_TOKEN:
         required: false
+permissions:
+  contents: read
 env:
-  WITH_TESTING: ${{ inputs.with_testing && '-Xswiftc -enable-testing' || '' }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   PACKAGE_ROOT: ${{ inputs.package_root != '' && format('--package-path={0}', inputs.package_root) || '' }}
-  EXTRA_FLAGS:  ${{ inputs.extra_flags }}
+  BASELINES: ${{ inputs.package_root || '.' }}/.api-breakage
+  EXTRA_FLAGS:  ${{ inputs.extra_flags || '--explicit-target-dependency-import-check error -Xswiftc -require-explicit-sendable' }}
   EXTRA_MUSL_FLAGS: ${{ inputs.extra_musl_flags }}
   WITH_TSAN: ${{ inputs.with_tsan && '--sanitize=thread' || '' }}
   WARNINGS_AS_ERRORS: ${{ inputs.warnings_as_errors && '-Xswiftc -warnings-as-errors' || '' }}
@@ -101,64 +109,115 @@ env:
   WITH_COVERAGE: ${{ inputs.with_coverage && '--enable-code-coverage' || '' }}
   IOS_SCHEME_NAME: ${{ inputs.ios_scheme_name }}
   IOS_XCODEBUILD_ACTION: ${{ inputs.ios_xcodebuild_action }}
+  ENABLE_ALL_TRAITS: ${{ inputs.enable_all_traits && '--enable-all-traits' || '' }}
 
 jobs:
   api-breakage:
     if: ${{ inputs.with_api_check && github.event_name == 'pull_request' && !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     container: swift:noble
-    timeout-minutes: 30
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-        with: { 'fetch-depth': 0 }
+      - { name: Check out code, uses: actions/checkout@v6, with: { 'fetch-depth': 0 } }
+      - name: Restore API baseline
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.BASELINES }}
+          # N.B.: Do not use restore-keys to restore a different api-breakage cache; the result will be a comparison against
+          # an outdated baseline, which invalidates the check.
+          key: api-breakage-${{ github.event.pull_request.base.sha }}
       - name: Run API breakage check
         run: |
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
-          swift package ${PACKAGE_ROOT} diagnose-api-breaking-changes origin/main ${EXTRA_FLAGS}
+          swift package ${PACKAGE_ROOT} diagnose-api-breaking-changes --baseline-dir=${BASELINES} origin/main
+  api-breakage-baseline:
+    if: ${{ inputs.with_api_check && github.event_name == 'push' && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    container: swift:noble
+    steps:
+      - { name: Check out code, uses: actions/checkout@v6, with: { 'fetch-depth': 0 } }
+      - name: Regenerate API breakage baseline
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          swift package ${PACKAGE_ROOT} diagnose-api-breaking-changes --baseline-dir=${BASELINES} --regenerate-baseline origin/main
+      - name: Cache API baseline
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.BASELINES }}
+          key: api-breakage-${{ github.sha }}
 
+  determine-linux-matrix:
+    if: ${{ !(github.event.pull_request.draft || false) }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: check-swift-minus-2
+        uses: vapor/ci/.github/actions/check-compatible-swift@15f8aff92cac6deb62a9f5891606a3167d76df28
+        with: { package_root: "${{ inputs.package_root }}", assume_installed_version: "6.1.3" }
+      - id: check-swift-minus-1
+        uses: vapor/ci/.github/actions/check-compatible-swift@15f8aff92cac6deb62a9f5891606a3167d76df28
+        with: { package_root: "${{ inputs.package_root }}", assume_installed_version: "6.2.4" }
+      - id: check-swift-current
+        uses: vapor/ci/.github/actions/check-compatible-swift@15f8aff92cac6deb62a9f5891606a3167d76df28
+        with: { package_root: "${{ inputs.package_root }}", assume_installed_version: "6.3.0" }
+      - id: gen-matrix
+        shell: bash
+        env:
+          RELTST: ${{ inputs.with_release_mode_testing && '1' || '0' }}
+          SMIN2: ${{ steps.check-swift-minus-2.outputs.swift-compatible == 'true' && 1 || 0 }}
+          SMIN1: ${{ steps.check-swift-minus-1.outputs.swift-compatible == 'true' && 1 || 0 }}
+          SCURR: ${{ steps.check-swift-current.outputs.swift-compatible == 'true' && 1 || 0 }}
+        run: |
+          set -e
+          echo "matrix=$(jq -nc \
+            --arg rltst "${RELTST}" --arg sm2 "${SMIN2}" --arg sm1 "${SMIN1}" --arg scr "${SCURR}" \
+            '{"swift-config": (
+              (if $sm2 == "1" then                   [{ image: "swift:6.1-noble", "build-mode": "debug" }] else [] end) +
+              (if $sm1 == "1" then                   [{ image: "swift:6.2-noble", "build-mode": "debug" }] else [] end) +
+              (if $scr == "1" then                   [{ image: "swift:6.3-noble", "build-mode": "debug" }] else [] end) +
+              (if $scr == "1" and $rltst == "1" then [{ image: "swift:6.3-noble", "build-mode": "release" }] else [] end)
+                                                  #+ [{ image: "swiftlang/swift:nightly-main-noble", "build-mode": "debug" }]
+            )}')" >> "${GITHUB_OUTPUT}"
+    
   linux-unit:
     if: ${{ !(github.event.pull_request.draft || false) }}
+    needs: determine-linux-matrix
     strategy:
       fail-fast: false
-      matrix:
-        swift-config:
-          - { image: "swift:6.0-noble", "build-mode": "debug" }
-          - { image: "swift:6.1-noble", "build-mode": "debug" }
-          - { image: "swift:6.1-noble", "build-mode": "release" }
+      matrix: ${{ fromJSON(needs.determine-linux-matrix.outputs.matrix) }}
     runs-on: ubuntu-latest
     container: ${{ matrix.swift-config.image }}
     timeout-minutes: 60
     steps:
+      - name: Install curl and zstd
+        run: apt-get update -yq && apt-get install -y curl zstd
       - name: Check out code
-        if: ${{ matrix.swift-config.build-mode == 'debug' || inputs.with_release_mode_testing }}
-        uses: actions/checkout@v4
-      - name: Check Swift compatibility
-        id: swift-check
-        if: ${{ matrix.swift-config.build-mode == 'debug' || inputs.with_release_mode_testing }}
-        uses: vapor/ci/.github/actions/check-compatible-swift@main
+        uses: actions/checkout@v6
+      - name: Cache .build
+        uses: actions/cache@v5
         with:
-          package_root: ${{ inputs.package_root }}
+          path: "${{ inputs.package_root || '.' }}/.build"
+          key: "${{ matrix.swift-config.image }}-${{ matrix.swift-config.build-mode }}-build-${{ runner.os }}-${{ github.event.pull_request.base.sha || github.event.after }}"
+          restore-keys: "${{ matrix.swift-config.image }}-${{ matrix.swift-config.build-mode }}-build-${{ runner.os }}-"
       - name: Run unit tests
-        if: ${{ steps.swift-check.outputs.swift-compatible == 'true' && (matrix.swift-config.build-mode == 'debug' || inputs.with_release_mode_testing) }}
         run: |
-          SWIFT_DETERMINISTIC_HASHING=1 \
           swift test \
             -c ${{ matrix.swift-config.build-mode }} \
-            ${WITH_TESTING} \
             ${PACKAGE_ROOT} \
             ${WITH_TSAN} \
             ${WARNINGS_AS_ERRORS} \
             ${WITH_COVERAGE} \
             ${TEST_FILTER} \
+            ${ENABLE_ALL_TRAITS} \
             ${EXTRA_FLAGS}
       - name: Upload coverage data
-        if: ${{ inputs.with_coverage && (steps.swift-check.outputs.swift-compatible == 'true') && (matrix.swift-config.build-mode == 'debug' || inputs.with_release_mode_testing) }}
-        uses: vapor/swift-codecov-action@v0.3
+        if: inputs.with_coverage
+        uses: vapor/swift-codecov-action@2f478f2fd22e06ca363967d0fb6c6593a8548cee # v0.3.5
         with:
           codecov_token:    ${{ secrets.CODECOV_TOKEN || '' }}
           package_path:     ${{ inputs.package_root }}
-          build_parameters: -c ${{ matrix.swift-config.build-mode }} ${{ inputs.extra_flags }}
+          build_parameters: -c ${{ matrix.swift-config.build-mode }} ${{ env.EXTRA_FLAGS }}
 
   macos-unit:
     if: ${{ !(github.event.pull_request.draft || false) }}
@@ -166,43 +225,47 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - macos-version: macos-14
-            xcode-version: latest-stable
           - macos-version: macos-15
+            xcode-version: latest-stable
+          - macos-version: macos-26
             xcode-version: latest-stable
     runs-on: ${{ matrix.macos-version }}
     timeout-minutes: 60
     steps:
       - name: Select appropriate Xcode version
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: ${{ matrix.xcode-version }}
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Check Swift compatibility
         id: swift-check
-        uses: vapor/ci/.github/actions/check-compatible-swift@main
+        uses: vapor/ci/.github/actions/check-compatible-swift@15f8aff92cac6deb62a9f5891606a3167d76df28
+        with: { package_root: "${{ inputs.package_root }}" }
+      - name: Cache .build
+        if: steps.swift-check.outputs.swift-compatible == 'true'
+        uses: actions/cache@v5
         with:
-          package_root: ${{ inputs.package_root }}
+          path: "${{ inputs.package_root || '.' }}/.build"
+          key: "${{ matrix.xcode-version }}-${{ matrix.macos-version }}-build-${{ runner.os }}-${{ github.event.pull_request.base.sha || github.event.after }}"
+          restore-keys: "${{ matrix.xcode-version }}-${{ matrix.macos-version }}-build-${{ runner.os }}-"
       - name: Run unit tests
-        if: ${{ steps.swift-check.outputs.swift-compatible == 'true' }}
-        env:
-          WITH_TSAN_MACOS: ${{ (inputs.with_tsan && matrix.macos-version != 'macos-14') && '--sanitize=thread' || '' }}
+        if: steps.swift-check.outputs.swift-compatible == 'true'
         run: |
-          SWIFT_DETERMINISTIC_HASHING=1 \
           swift test \
             ${PACKAGE_ROOT} \
-            ${WITH_TSAN_MACOS} \
+            ${WITH_TSAN} \
             ${WITH_COVERAGE} \
             ${TEST_FILTER} \
+            ${ENABLE_ALL_TRAITS} \
             ${EXTRA_FLAGS}
       - name: Upload coverage data
-        if: ${{ (steps.swift-check.outputs.swift-compatible == 'true') && inputs.with_coverage }}
-        uses: vapor/swift-codecov-action@v0.3
+        if: inputs.with_coverage && steps.swift-check.outputs.swift-compatible == 'true'
+        uses: vapor/swift-codecov-action@2f478f2fd22e06ca363967d0fb6c6593a8548cee # v0.3.5
         with:
           codecov_token:    ${{ secrets.CODECOV_TOKEN || '' }}
           package_path:     ${{ inputs.package_root }}
-          build_parameters: ${{ inputs.extra_flags }}
+          build_parameters: -c debug ${{ env.EXTRA_FLAGS }}
 
   windows-unit:
     if: ${{ !(github.event.pull_request.draft || false) && inputs.with_windows }}
@@ -210,47 +273,59 @@ jobs:
       fail-fast: false
       matrix:
         swift-version:
-          # - 5.9
-          # - 5.10
-          - 6.0
           - 6.1
+          - 6.2
+          - 6.3
         include:
-          # - { swift-version: 5.9, swift-branch: swift-5.9.2-release, swift-tag: 5.9.2-RELEASE }
-          # - { swift-version: 5.10, swift-branch: swift-5.10.1-release, swift-tag: 5.10.1-RELEASE }
-          - { swift-version: 6.0, swift-branch: swift-6.0.3-release, swift-tag: 6.0.3-RELEASE }
-          - { swift-version: 6.1, swift-branch: swift-6.1-release, swift-tag: 6.1-RELEASE }
+          - { swift-version: 6.1, swift-branch: swift-6.1.3-release, swift-tag: 6.1.3-RELEASE }
+          - { swift-version: 6.2, swift-branch: swift-6.2.4-release, swift-tag: 6.2.4-RELEASE }
+          - { swift-version: 6.3, swift-branch: swift-6.3-release, swift-tag: 6.3-RELEASE }
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      # https://github.com/compnerd/cassowary/pull/27
-      - name: Configure dev environment
-        uses: compnerd/gha-setup-vsdevenv@main
-        with:
-          toolset_version: 14.29
-          winsdk: 10.0.22621.0
       - name: Install Windows Swift toolchain
-        uses: compnerd/gha-setup-swift@main
+        uses: compnerd/gha-setup-swift@eeda069c5bc95ac8a9ac5cea7d4f588ae5420ca5 # v0.4.0
         with:
-          branch: ${{ matrix.swift-branch }}
-          tag: ${{ matrix.swift-tag }}
+          swift-version: ${{ matrix.swift-branch }}
+          swift-build: ${{ matrix.swift-tag }}
+          update-sdk-modules: true
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+      - name: Check Swift compatibility
+        id: swift-check
+        uses: vapor/ci/.github/actions/check-compatible-swift@15f8aff92cac6deb62a9f5891606a3167d76df28
+        with: { package_root: "${{ inputs.package_root }}" }
+      - name: Cache .build
+        if: steps.swift-check.outputs.swift-compatible == 'true'
+        uses: actions/cache@v5
+        with:
+          path: "${{ inputs.package_root || '.' }}/.build"
+          key: "${{ matrix.swift-tag }}-build-${{ runner.os }}-${{ github.event.pull_request.base.sha || github.event.after }}"
+          restore-keys: "${{ matrix.swift-tag }}-build-${{ runner.os }}-"
       - name: Run unit tests
+        if: steps.swift-check.outputs.swift-compatible == 'true'
         run: |
-          swift test ${PACKAGE_ROOT} ${WITH_TSAN} ${TEST_FILTER} ${EXTRA_FLAGS} -Xbuild-tools-swiftc -windows-sdk-root -Xbuild-tools-swiftc "${env:WindowsSdkDir}" -Xbuild-tools-swiftc -windows-sdk-version -Xbuild-tools-swiftc ${env:UCRTVersion} -Xswiftc -windows-sdk-root -Xswiftc "${env:WindowsSdkDir}" -Xswiftc -windows-sdk-version -Xswiftc ${env:UCRTVersion}
+          $params = @();
+          $params += ($env:WARNINGS_AS_ERRORS -split ' ');
+          $params += ($env:ENABLE_ALL_TRAITS -split ' ');
+          $params += ($env:EXTRA_FLAGS -split ' ')
+          swift test $env:PACKAGE_ROOT $env:TEST_FILTER @params
 
   ios-unit:
     if: ${{ !(github.event.pull_request.draft || false) && inputs.ios_scheme_name != '' }}
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Select appropriate Xcode version
-        uses: maxim-lobanov/setup-xcode@v1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: latest-stable
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Run iOS Tests
-        run: xcodebuild ${IOS_XCODEBUILD_ACTION} -scheme ${IOS_SCHEME_NAME} -destination 'platform=iOS Simulator,OS=latest,name=iPhone 16 Pro'
+        run: |
+          name="$(xcrun simctl list -j -e devices | jq -r '[.devices | to_entries[] | select(.key | contains(".iOS-"))] | sort_by(.key) | last | .value | first | .name')"
+          echo "Using '${name}' as destination"
+          xcodebuild ${IOS_XCODEBUILD_ACTION} -scheme ${IOS_SCHEME_NAME} -destination "platform=iOS Simulator,name=${name}"
 
   lint:
     if: ${{ inputs.with_linting }}
@@ -261,7 +336,7 @@ jobs:
       - name: Configure git
         run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Read config file
         # if .swift-format is not provided in the repo, use the default config file from CI
         run: |
@@ -273,7 +348,7 @@ jobs:
       - name: Lint
         run: |
           apt -q update && apt -yq install curl
-          curl -s https://raw.githubusercontent.com/swiftlang/github-workflows/refs/heads/main/.github/workflows/scripts/check-swift-format.sh | bash
+          curl -sL https://raw.githubusercontent.com/swiftlang/github-workflows/refs/heads/main/.github/workflows/scripts/check-swift-format.sh | bash
 
   musl:
     if: ${{ !(github.event.pull_request.draft || false) && inputs.with_musl }}
@@ -282,11 +357,42 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+      - name: Install linux dependencies
+        run: apt-get update && apt-get install -y curl jq
       - name: Install SDK
-        run: swift sdk install https://download.swift.org/swift-6.3.2-release/static-sdk/swift-6.3.2-RELEASE/swift-6.3.2-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz --checksum 3fd798bef6f4408f1ea5a6f94ce4d4052830c4326ab85ebc04f983f01b3da407
+        run: |
+          version_num="$(swiftc --version | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+          tag="swift-${version_num}-RELEASE"
+          sdk_info="$(curl -s https://www.swift.org/api/v1/install/releases.json | jq -r --arg tag "$tag" '.[] | select(.tag == $tag).platforms[] | select(.platform == "static-sdk") | [.version, .checksum] | @tsv')"
+          version="$(echo "$sdk_info" | cut -f1)"
+          checksum="$(echo "$sdk_info" | cut -f2)"
+          swift sdk install "https://download.swift.org/$(echo $tag | tr [A-Z] [a-z])/static-sdk/$tag/${tag}_static-linux-${version}.artifactbundle.tar.gz" --checksum "$checksum"
       - name: Build
-        run: swift build --swift-sdk x86_64-swift-linux-musl ${PACKAGE_PATH} ${EXTRA_FLAGS} ${EXTRA_MUSL_FLAGS} ${WARNINGS_AS_ERRORS}
+        run: swift build --swift-sdk x86_64-swift-linux-musl ${PACKAGE_PATH} ${EXTRA_FLAGS} ${EXTRA_MUSL_FLAGS} ${WARNINGS_AS_ERRORS} ${ENABLE_ALL_TRAITS}
+
+  wasm:
+    if: ${{ !(github.event.pull_request.draft || false) && inputs.with_wasm }}
+    runs-on: ubuntu-latest
+    container: swift:noble
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+      # NOTE: Portions of this workflow are adapted from
+      # https://github.com/apple/swift-nio/pull/3159/
+      - name: Install linux dependencies
+        run: apt-get update -y -q && apt-get install -y -q curl jq
+      - name: Install SDK
+        run: |
+          tag="$(swiftc --version | grep -Po '(?<=\().+(?=\))')"
+          checksum="$(curl -s https://www.swift.org/api/v1/install/releases.json | \
+            jq -r --arg tag "$tag" '.[] | select(.tag == $tag).platforms[] | select(.platform == "wasm-sdk").checksum // empty')"
+          swift sdk install https://download.swift.org/$(echo $tag | tr [A-Z] [a-z])/wasm-sdk/$tag/"$tag"_wasm.artifactbundle.tar.gz --checksum $checksum
+      - name: Build
+        run: |
+          tag="$(swiftc --version | grep -Po '(?<=\().+(?=\))')"
+          swift build --swift-sdk "$tag"_wasm ${PACKAGE_PATH} ${EXTRA_FLAGS} ${WARNINGS_AS_ERRORS} ${ENABLE_ALL_TRAITS}
 
   android-unit:
     if: ${{ !(github.event.pull_request.draft || false) && inputs.with_android }}
@@ -295,13 +401,24 @@ jobs:
       matrix:
         swift-version:
           - 6.1
+          - 6.2
+          - 6.3
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Ensure zstd is available
+        run: sudo apt-get update -yq && sudo apt-get install -yq zstd
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+      - name: Check Swift compatibility
+        id: swift-check
+        uses: vapor/ci/.github/actions/check-compatible-swift@15f8aff92cac6deb62a9f5891606a3167d76df28
+        with: { package_root: "${{ inputs.package_root }}", assume_installed_version: "${{ matrix.swift-version }}" }
       - name: Run unit tests
-        uses: skiptools/swift-android-action@v2
+        if: steps.swift-check.outputs.swift-compatible == 'true'
+        uses: skiptools/swift-android-action@2044b79660f201ccef8cbce62877e4ec5409f9c8 # v2.9.5
         with:
           swift-version: ${{ matrix.swift-version }}
           copy-files: ${{ inputs.android_copy_files }}
+          swift-build-flags: ${{ env.ENABLE_ALL_TRAITS }}
+          free-disk-space: true
