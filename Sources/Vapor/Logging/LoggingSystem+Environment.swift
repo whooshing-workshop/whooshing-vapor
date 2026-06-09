@@ -20,10 +20,7 @@ extension LoggingSystem {
     }
 }
 
-extension Logging.Logger.Level: Swift.LosslessStringConvertible {
-    public init?(_ description: String) { self.init(rawValue: description.lowercased()) }
-    public var description: String { self.rawValue }
-
+extension Logging.Logger.Level {
     public static func detect(from environment: inout Environment) throws -> Logger.Level {
         struct LogSignature: CommandSignature {
             @Option(name: "log", help: "Change log level")
