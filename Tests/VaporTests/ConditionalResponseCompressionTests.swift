@@ -3,6 +3,7 @@
 #endif
 import Foundation
 import Vapor
+import VaporTestUtils
 import XCTest
 import AsyncHTTPClient
 import NIOCore
@@ -201,7 +202,7 @@ final class ConditionalResponseCompressionServerTests: XCTestCase, @unchecked Se
     func testUnknownType() async throws {
         app.get("resource") { request in
             var headers = HTTPHeaders()
-            headers.contentType = unknownType /// Not explicitely marked as compressible or not.
+            headers.contentType = unknownType /// Not explicitly marked as compressible or not.
             return compressiblePayload.encodeResponse(status: .ok, headers: headers, for: request)
         }
         
@@ -231,7 +232,7 @@ final class ConditionalResponseCompressionServerTests: XCTestCase, @unchecked Se
     func testImage() async throws {
         app.get("resource") { request in
             var headers = HTTPHeaders()
-            headers.contentType = .png /// PNGs are explicitely called out as incompressible.
+            headers.contentType = .png /// PNGs are explicitly called out as incompressible.
             return compressiblePayload.encodeResponse(status: .ok, headers: headers, for: request)
         }
         
@@ -261,7 +262,7 @@ final class ConditionalResponseCompressionServerTests: XCTestCase, @unchecked Se
     func testVideo() async throws {
         app.get("resource") { request in
             var headers = HTTPHeaders()
-            headers.contentType = .mpeg /// Videos are explicitely called out as incompressible, but as a class.
+            headers.contentType = .mpeg /// Videos are explicitly called out as incompressible, but as a class.
             return compressiblePayload.encodeResponse(status: .ok, headers: headers, for: request)
         }
         
@@ -291,7 +292,7 @@ final class ConditionalResponseCompressionServerTests: XCTestCase, @unchecked Se
     func testText() async throws {
         app.get("resource") { request in
             var headers = HTTPHeaders()
-            headers.contentType = .plainText /// Text types are explicitely called out as compressible, but as a class.
+            headers.contentType = .plainText /// Text types are explicitly called out as compressible, but as a class.
             return compressiblePayload.encodeResponse(status: .ok, headers: headers, for: request)
         }
         
@@ -318,6 +319,34 @@ final class ConditionalResponseCompressionServerTests: XCTestCase, @unchecked Se
         try await assertUncompressed(.enabled(disallowedTypes: .all, allowRequestOverrides: true))
     }
     
+    func testMissingContentType() async throws {
+        app.get("resource") { request in
+            Response(status: .ok, body: .init(string: compressiblePayload))
+        }
+
+        try app.server.start()
+
+        try await assertUncompressed(app.http.server.configuration.responseCompression) /// Default case
+        try await assertUncompressed(.forceDisabled)
+        try await assertUncompressed(.disabled)
+        try await assertUncompressed(.enabledForCompressibleTypes)
+        try await assertCompressed(.enabled)
+
+        try await assertUncompressed(.disabled(allowedTypes: .none, allowRequestOverrides: false))
+        try await assertUncompressed(.disabled(allowedTypes: .compressible, allowRequestOverrides: false))
+        try await assertUncompressed(.disabled(allowedTypes: .all, allowRequestOverrides: false))
+        try await assertUncompressed(.disabled(allowedTypes: .none, allowRequestOverrides: true))
+        try await assertUncompressed(.disabled(allowedTypes: .compressible, allowRequestOverrides: true))
+        try await assertUncompressed(.disabled(allowedTypes: .all, allowRequestOverrides: true))
+
+        try await assertCompressed(.enabled(disallowedTypes: .none, allowRequestOverrides: false))
+        try await assertCompressed(.enabled(disallowedTypes: .incompressible, allowRequestOverrides: false))
+        try await assertCompressed(.enabled(disallowedTypes: .all, allowRequestOverrides: false))
+        try await assertCompressed(.enabled(disallowedTypes: .none, allowRequestOverrides: true))
+        try await assertCompressed(.enabled(disallowedTypes: .incompressible, allowRequestOverrides: true))
+        try await assertCompressed(.enabled(disallowedTypes: .all, allowRequestOverrides: true))
+    }
+
     func testEnabledByResponse() async throws {
         app.get("resource") { request in
             var headers = HTTPHeaders()

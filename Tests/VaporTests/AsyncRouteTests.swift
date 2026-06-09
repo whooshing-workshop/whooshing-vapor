@@ -403,7 +403,10 @@ final class AsyncRouteTests: XCTestCase {
     }
 }
 
-extension Vapor.WebSocket: Swift.Hashable {
+extension WebSocket: @retroactive Equatable {}
+extension Vapor.WebSocket: @retroactive Hashable {}
+
+extension Vapor.WebSocket {
     public static func == (lhs: WebSocket, rhs: WebSocket) -> Bool {
         lhs === rhs
     }
