@@ -136,38 +136,57 @@ final internal class CustomCryptoIOHandler<IOHandler>: ChannelDuplexHandler, @un
     
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let buffer = self.unwrapInboundIn(data)
-        ioHandler.input(request: buffer, context: context).whenComplete { result in
+        let handler = self.ioHandler
+        
+        let loopBoundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
+        
+        handler.input(request: buffer, context: context).whenComplete { result in
+            let safeContext = loopBoundContext.value
             switch result {
             case .success(let req):
-                context.fireChannelRead(self.wrapOutboundOut(req))
+                safeContext.fireChannelRead(self.wrapOutboundOut(req))
             case .failure(let err):
-                self.errorHappend(context: context, label: "Input", error: err)
+                self.errorHappend(context: safeContext, label: "Input", error: err)
             }
+            withExtendedLifetime(handler) {}
         }
     }
     
     func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
         let buffer = self.unwrapOutboundIn(data)
-        let res = ioHandler.output(response: buffer, context: context).wrapped.flatMap { res in
-            return context.writeAndFlush(self.wrapOutboundOut(res))
+        let handler = self.ioHandler
+        
+        let loopBoundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
+        
+        let res = handler.output(response: buffer, context: context).wrapped.flatMap { res in
+            let safeContext = loopBoundContext.value
+            return safeContext.writeAndFlush(self.wrapOutboundOut(res))
         }
         
         if let p = promise {
             res.cascade(to: p)
         }
+        
+        res.whenComplete { _ in
+            withExtendedLifetime(handler) {}
+        }
     }
 
     func channelRegistered(context: ChannelHandlerContext) {
         context.fireChannelRegistered()
+        
+        let loopBoundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
         ioHandler.connectionStart(context: context).whenFailure { err in
-            self.errorHappend(context: context, label: "连线建立", error: err)
+            self.errorHappend(context: loopBoundContext.value, label: "连线建立", error: err)
         }
     }
     
     func channelUnregistered(context: ChannelHandlerContext) {
         context.fireChannelUnregistered()
+        
+        let loopBoundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
         ioHandler.connectionEnd(context: context).whenFailure { err in
-            self.errorHappend(context: context, label: "连线终止", error: err)
+            self.errorHappend(context: loopBoundContext.value, label: "连线终止", error: err)
         }
     }
     
@@ -179,7 +198,6 @@ final internal class CustomCryptoIOHandler<IOHandler>: ChannelDuplexHandler, @un
     func errorHappend(context: ChannelHandlerContext, label: String, error: Error) {
         self.logger.report(error: error)
         
-
         if context.channel.isActive {
             var headers = HTTPHeaders()
             var body = try! ByteBuffer(data: JSONEncoder().encode(BodyReply(error: true, reason: "\(error)")))
@@ -196,8 +214,11 @@ final internal class CustomCryptoIOHandler<IOHandler>: ChannelDuplexHandler, @un
             var buffer = context.channel.allocator.buffer(string: httpResponseHeadToString(head))
             buffer.writeBuffer(&body)
             buffer.writeBytes([])
+            
+            let loopBoundContext = NIOLoopBound(context, eventLoop: context.eventLoop)
             context.writeAndFlush(self.wrapOutboundOut(buffer)).whenComplete { _ in
-                context.close(promise: nil)
+                let safeContext = loopBoundContext.value
+                safeContext.close(promise: nil)
             }
         } else {
             context.close(promise: nil)
@@ -215,8 +236,6 @@ final internal class CustomCryptoIOHandler<IOHandler>: ChannelDuplexHandler, @un
         }
     }
 }
-
-extension ChannelHandlerContext: @unchecked @retroactive Sendable {}
 
 @frozen
 public struct AnyHTTPIOHandler: HTTPIOHandler, Sendable {

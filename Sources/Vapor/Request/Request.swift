@@ -77,6 +77,15 @@ public final class Request: CustomStringConvertible, Sendable {
             self.requestBox.withLockedValue { $0.route = newValue }
         }
     }
+    
+    public var channel: Channel? {
+        get {
+            self.requestBox.withLockedValue { $0.channel?.value }
+        }
+        set {
+            self.requestBox.withLockedValue { $0.channel = WeakContainer(value: newValue) }
+        }
+    }
 
     /// We try to determine true peer address if load balancer or reversed proxy provided info in headers
     ///
@@ -128,15 +137,6 @@ public final class Request: CustomStringConvertible, Sendable {
         }
         set {
             // ignore since Request is a reference type
-        }
-    }
-    
-    public var channel: Channel? {
-        get {
-            self.requestBox.withLockedValue { $0.channel?.value }
-        }
-        set {
-            self.requestBox.withLockedValue { $0.channel = WeakContainer(value: newValue) }
         }
     }
 
@@ -295,28 +295,6 @@ public final class Request: CustomStringConvertible, Sendable {
         var peerCertificateChain: ValidatedCertificateChain?
         var byteBufferAllocator: ByteBufferAllocator
         var channel: WeakContainer?
-    }
-    
-    final class WeakContainer: @unchecked Sendable {
-        private weak var _value: Channel?
-        private let lock = NIOLock()
-
-        init(value: Channel?) {
-            self._value = value
-        }
-
-        var value: Channel? {
-            get {
-                lock.lock()
-                defer { lock.unlock() }
-                return _value
-            }
-            set {
-                lock.lock()
-                _value = newValue
-                lock.unlock()
-            }
-        }
     }
     
     let requestBox: NIOLockedValueBox<RequestBox>
