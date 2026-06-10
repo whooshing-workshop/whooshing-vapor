@@ -9,9 +9,15 @@ public struct ClientRequest: Sendable {
     public var headers: HTTPHeaders
     public var body: ByteBuffer?
     public var timeout: TimeAmount?
-    public weak var channel: Channel?
     private let byteBufferAllocator: ByteBufferAllocator
 
+    private let channelContainer = WeakContainer(value: nil)
+    
+    public var channel: Channel? {
+        get { channelContainer.value }
+        set { channelContainer.value = newValue }
+    }
+    
     public init(
         method: HTTPMethod = .GET,
         url: URI = "/",

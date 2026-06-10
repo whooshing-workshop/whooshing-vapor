@@ -7,8 +7,14 @@ public struct ClientResponse: Sendable {
     public var status: HTTPStatus
     public var headers: HTTPHeaders
     public var body: ByteBuffer?
-    public weak var channel: Channel?
     private let byteBufferAllocator: ByteBufferAllocator
+    
+    private let channelContainer = WeakContainer(value: nil)
+    
+    public var channel: Channel? {
+        get { channelContainer.value }
+        set { channelContainer.value = newValue }
+    }
 
     public init(status: HTTPStatus = .ok, headers: HTTPHeaders = [:], body: ByteBuffer? = nil, byteBufferAllocator: ByteBufferAllocator = ByteBufferAllocator()) {
         self.status = status
