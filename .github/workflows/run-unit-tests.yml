@@ -325,8 +325,11 @@ jobs:
         run: |
           name="$(xcrun simctl list -j -e devices | jq -r '[.devices | to_entries[] | select(.key | contains(".iOS-"))] | sort_by(.key) | last | .value | first | .name')"
           echo "Using '${name}' as destination"
-          xcodebuild ${IOS_XCODEBUILD_ACTION} -scheme ${IOS_SCHEME_NAME} -destination "platform=iOS Simulator,name=${name}"
-
+          xcodebuild ${IOS_XCODEBUILD_ACTION} -scheme ${IOS_SCHEME_NAME} -destination "platform=iOS Simulator,name=${name}" \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGN_STYLE=Manual \
+          CODE_SIGN_IDENTITY=""
+          
   lint:
     if: ${{ inputs.with_linting }}
     runs-on: ubuntu-latest
