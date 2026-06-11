@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         // Whooshing Basic tools
-        .package(url: "https://github.com/whooshing-workshop/whooshing.toolbox-basic.git", from: "1.5.2"),
+        .package(url: "https://github.com/whooshing-workshop/whooshing.toolbox-basic.git", from: "1.5.6"),
         
         // HTTP client library built on SwiftNIO
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.24.0"),
@@ -85,6 +85,7 @@ let package = Package(
             dependencies: [
                 .product(name: "NIOAdvanced", package: "whooshing.toolbox-basic"),
                 .product(name: "ErrorHandle", package: "whooshing.toolbox-basic"),
+                .product(name: "LoggingAdvanced", package: "whooshing.toolbox-basic"),
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "AsyncKit", package: "async-kit"),
                 .target(name: "CVaporBcrypt"),

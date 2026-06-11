@@ -3,5 +3,5 @@
 Add this in your Package.swift file: 
 
 ```
-.package(url: "https://github.com/whooshing-workshop/whooshing-vapor.git", from: "1.1.1")
+.package(url: "https://github.com/whooshing-workshop/whooshing-vapor.git", from: "1.1.2")
 ```

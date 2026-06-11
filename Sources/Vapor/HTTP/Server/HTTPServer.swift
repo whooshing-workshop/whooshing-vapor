@@ -7,6 +7,7 @@ import NIOSSL
 import Logging
 import NIOPosix
 import NIOConcurrencyHelpers
+internal import LoggingAdvanced
 
 public enum HTTPVersionMajor: Equatable, Hashable, Sendable {
     case one
@@ -769,7 +770,7 @@ extension ChannelPipeline {
             res.append(frameEncoderHandler)
             res.append(frameDecoderHandler)
             // Whooshing 加密处理器
-            let cryptoHandler = CustomCryptoIOHandler(ioHandler: ioHandler, logger: application.logger)
+            let cryptoHandler = CustomCryptoIOHandler(ioHandler: ioHandler, logger: application.logger.derive(subId: "crypto"))
             res.append(cryptoHandler)
         }
         return res
