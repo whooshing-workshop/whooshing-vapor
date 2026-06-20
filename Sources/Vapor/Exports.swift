@@ -28,3 +28,8 @@
 @_documentation(visibility: internal) @_exported import struct NIOSSL.TLSConfiguration
 @_documentation(visibility: internal) @_exported import WebSocketKit
 @_documentation(visibility: internal) @_exported import MultipartKit
+
+@_exported import Logging
+@_exported import LoggingAdvanced
+@_exported import NIOAdvanced
+@_exported import NIOFoundationCompat

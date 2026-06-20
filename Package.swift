@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         // Whooshing Basic tools
-        .package(url: "https://github.com/whooshing-workshop/whooshing.toolbox-basic.git", from: "1.5.6"),
+        .package(url: "https://github.com/whooshing-workshop/whooshing.toolbox-basic.git", from: "1.6.0"),
         
         // HTTP client library built on SwiftNIO
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.24.0"),

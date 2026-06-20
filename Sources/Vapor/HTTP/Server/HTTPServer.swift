@@ -7,7 +7,7 @@ import NIOSSL
 import Logging
 import NIOPosix
 import NIOConcurrencyHelpers
-internal import LoggingAdvanced
+import LoggingAdvanced
 
 public enum HTTPVersionMajor: Equatable, Hashable, Sendable {
     case one
