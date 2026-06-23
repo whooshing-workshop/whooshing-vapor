@@ -2,11 +2,11 @@ import NIOAdvanced
 import ErrorHandle
 
 public extension Error {
-    var vaporlized: Abort {
+    var vaporlized: AbortError {
         return errorInterpret(error: self)
         
         @Sendable
-        func errorInterpret<T: Error>(error: T) -> Abort {
+        func errorInterpret<T: Error>(error: T) -> AbortError {
             if let err = error as? any Err {
                 let reason = String(describing: err.error.rawValue) + (err.explain == nil ? "" : ", " + err.explain!)
                 
@@ -39,6 +39,8 @@ public extension Error {
                     )
                 case .none: fatalError("错误处理系统异常")
                 }
+            } else if let err = error as? AbortError {
+                return err
             } else {
                 return Abort(
                     .internalServerError,
@@ -53,8 +55,8 @@ public extension Error {
 
 public extension EventLoopResult {
     var vaporlized: EventLoopFuture<Value> {
-        return self.flatMapErrorThrowing { error throws(Abort) in
+        return self.wrapped.flatMapErrorThrowing { error in
             throw error.vaporlized
-        }.wrapped
+        }
     }
 }
